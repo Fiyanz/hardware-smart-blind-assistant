@@ -4,7 +4,8 @@ Firmware untuk mengontrol mode blind/tirai via 2 push button dengan kirim data H
 
 ## Hardware
 - ESP32-C3
-- Tombol UP (GPIO 2) dan DOWN (GPIO 3), aktif rendah (`INPUT_PULLUP`)
+- Button ACTION (GPIO 2) dan MODE (GPIO 3), aktif LOW (`INPUT_PULLUP`)
+- Built-in LED: GPIO 8 (aktif LOW, `LOW` = nyala)
 
 ## Build & Upload
 ```bash

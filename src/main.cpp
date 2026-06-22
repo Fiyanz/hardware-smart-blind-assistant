@@ -4,8 +4,8 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
-constexpr uint8_t BTN_ACTION_PIN = 4;
-constexpr uint8_t BTN_MODE_PIN = 5;
+constexpr uint8_t BTN_ACTION_PIN = 2;
+constexpr uint8_t BTN_MODE_PIN = 3;
 constexpr uint8_t LED_PIN = 8;
 
 constexpr bool LED_ON = LOW;
@@ -31,7 +31,7 @@ struct ButtonState {
   unsigned long lastRawChangeMs;
 
   ButtonState(uint8_t buttonPin)
-    : pin(buttonPin), raw(true), stablePressed(false), lastRawChangeMs(0) {}
+    : pin(buttonPin), raw(false), stablePressed(false), lastRawChangeMs(0) {}
 };
 
 struct ButtonEvent {
@@ -128,8 +128,17 @@ void sendCommand(uint8_t command) {
   pTriggerCharacteristic->setValue(&command, 1);
   pTriggerCharacteristic->notify();
 
-  Serial.print(">> Command dikirim: 0x");
-  Serial.println(command, HEX);
+  Serial.print(">> send ");
+  Serial.print(command, HEX);
+  if (command == CMD_ACTION) {
+    Serial.println(" (ACTION)");
+  } else if (command == CMD_NEXT_MODE) {
+    Serial.println(" (NEXT_MODE)");
+  } else if (command == CMD_STOP_ALL) {
+    Serial.println(" (STOP_ALL)");
+  } else {
+    Serial.println();
+  }
 
   startLedFeedback();
 }
@@ -140,6 +149,7 @@ void handleButtons() {
 
   if (actionButton.stablePressed && modeButton.stablePressed) {
     if (!stopAllSentWhilePressed) {
+      Serial.println("[BTN] ACTION && MODE -> STOP_ALL");
       sendCommand(CMD_STOP_ALL);
       stopAllSentWhilePressed = true;
     }
@@ -151,10 +161,18 @@ void handleButtons() {
   }
 
   if (actionEvent.pressed) {
+    Serial.print("[BTN] ACTION pin=");
+    Serial.print(BTN_ACTION_PIN);
+    Serial.print(" -> send 0x");
+    Serial.println(CMD_ACTION, HEX);
     sendCommand(CMD_ACTION);
   }
 
   if (modeEvent.pressed) {
+    Serial.print("[BTN] MODE pin=");
+    Serial.print(BTN_MODE_PIN);
+    Serial.print(" -> send 0x");
+    Serial.println(CMD_NEXT_MODE, HEX);
     sendCommand(CMD_NEXT_MODE);
   }
 }
@@ -220,6 +238,19 @@ void setup() {
 }
 
 void loop() {
+  static unsigned long lastDebug = 0;
+  const unsigned long now = millis();
+
+  if (now - lastDebug >= 1000) {
+    lastDebug = now;
+    Serial.print("[PIN] ACTION=");
+    Serial.print(digitalRead(BTN_ACTION_PIN));
+    Serial.print(" MODE=");
+    Serial.print(digitalRead(BTN_MODE_PIN));
+    Serial.print(" | stable_STOP_ALL=");
+    Serial.println(stopAllSentWhilePressed);
+  }
+
   updateLedFeedback();
   handleButtons();
   handleBleReconnect();
