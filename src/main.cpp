@@ -1,14 +1,22 @@
 /**
- * Smart Blind Assistant - ESP32-C3 BLE Firmware
+ * Smart Blind Assistant - ESP32-WROOM BLE Firmware
  * 
  * Firmware untuk komunikasi BLE dengan app Flutter SightAssist.
- * ESP32-C3 bertindak sebagai BLE peripheral (server) yang mengirim
+ * ESP32-WROOM bertindak sebagai BLE peripheral (server) yang mengirim
  * command dari tombol fisik ke app Flutter via BLE notification.
  * 
  * Tombol:
- *   - Tombol 1 (GPIO 2): Voice command     → kirim 0x01
- *   - Tombol 2 (GPIO 3): Next mode          → kirim 0x02
+ *   - Tombol 1 (GPIO 21): Voice command     → kirim 0x01
+ *   - Tombol 2 (GPIO  5): Next mode         → kirim 0x02
  *   - Tombol 1+2 bersamaan: Emergency stop  → kirim 0x03
+ * 
+ * Wiring tombol (active LOW, INPUT_PULLUP):
+ *   Kaki 1 → GPIO pin ESP32
+ *   Kaki 2 → GND
+ *   (tidak perlu resistor eksternal)
+ * 
+ * Power:
+ *   Baterai Li-Ion 3.7V → TP4056 → LDO 3.3V → pin 3V3 ESP32
  * 
  * BLE UUIDs (harus cocok dengan app Flutter):
  *   Service:        4fafc201-1fb5-459e-8fcc-c5c9c331914b
@@ -19,8 +27,8 @@
 #include <NimBLEDevice.h>
 
 // ─── Pin Definitions ────────────────────────────────────────
-#define BUTTON_VOICE_PIN   2    // Tombol 1: Voice command
-#define BUTTON_MODE_PIN    3    // Tombol 2: Next mode
+#define BUTTON_VOICE_PIN   21   // Tombol 1: Voice command
+#define BUTTON_MODE_PIN     5   // Tombol 2: Next mode
 
 // ─── BLE UUIDs (HARUS SAMA dengan app Flutter) ─────────────
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -56,24 +64,18 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer) override {
         deviceConnected = true;
         Serial.println(">> Device terhubung!");
-        // Lanjutkan advertising agar bisa reconnect
         NimBLEDevice::startAdvertising();
     }
 
     void onDisconnect(NimBLEServer* pServer) override {
         deviceConnected = false;
         Serial.println(">> Device terputus. Menunggu koneksi...");
-        // Mulai advertising lagi
         NimBLEDevice::startAdvertising();
     }
 };
 
 // ─── Send BLE Command ───────────────────────────────────────
 
-/**
- * Kirim command byte ke app Flutter via BLE notification.
- * Hanya kirim jika ada device yang terhubung.
- */
 void sendCommand(uint8_t cmd) {
     if (!deviceConnected) {
         Serial.printf("Tidak ada koneksi BLE. Command 0x%02X diabaikan.\n", cmd);
@@ -82,7 +84,7 @@ void sendCommand(uint8_t cmd) {
 
     pCharacteristic->setValue(&cmd, 1);
     pCharacteristic->notify();
-    
+
     const char* cmdName;
     switch (cmd) {
         case CMD_VOICE:     cmdName = "VOICE"; break;
@@ -95,24 +97,14 @@ void sendCommand(uint8_t cmd) {
 
 // ─── Button Handling ────────────────────────────────────────
 
-/**
- * Baca status tombol dengan debounce dan deteksi combo.
- * 
- * Logika:
- * 1. Jika kedua tombol ditekan bersamaan (dalam COMBO_WINDOW_MS) 
- *    dan ditahan >= COMBO_HOLD_MS → kirim STOP_ALL (0x03)
- * 2. Jika hanya tombol 1 → kirim VOICE (0x01)
- * 3. Jika hanya tombol 2 → kirim NEXT_MODE (0x02)
- */
 void handleButtons() {
     unsigned long now = millis();
-    
-    bool btn1 = digitalRead(BUTTON_VOICE_PIN) == LOW;  // Active LOW (INPUT_PULLUP)
+
+    bool btn1 = digitalRead(BUTTON_VOICE_PIN) == LOW;  // Active LOW
     bool btn2 = digitalRead(BUTTON_MODE_PIN) == LOW;
-    
-    // ── Deteksi tombol baru ditekan (falling edge) ──
+
+    // ── Deteksi tombol baru ditekan ──
     if (btn1 && !voicePressed) {
-        // Tombol 1 baru ditekan
         if (now - lastVoicePress > DEBOUNCE_MS) {
             voicePressed = true;
             voiceHandled = false;
@@ -120,9 +112,8 @@ void handleButtons() {
             Serial.println("Tombol 1 (Voice) ditekan");
         }
     }
-    
+
     if (btn2 && !modePressed) {
-        // Tombol 2 baru ditekan
         if (now - lastModePress > DEBOUNCE_MS) {
             modePressed = true;
             modeHandled = false;
@@ -130,63 +121,45 @@ void handleButtons() {
             Serial.println("Tombol 2 (Mode) ditekan");
         }
     }
-    
-    // ── Cek combo press (kedua tombol ditekan bersamaan) ──
+
+    // ── Cek combo press ──
     if (voicePressed && modePressed && !comboSent) {
-        // Kedua tombol ditekan — cek apakah dalam window combo
-        unsigned long pressGap = (lastVoicePress > lastModePress) 
-                                  ? (lastVoicePress - lastModePress) 
+        unsigned long pressGap = (lastVoicePress > lastModePress)
+                                  ? (lastVoicePress - lastModePress)
                                   : (lastModePress - lastVoicePress);
-        
+
         if (pressGap < COMBO_WINDOW_MS) {
-            // Kedua tombol ditekan hampir bersamaan
             unsigned long earliestPress = min(lastVoicePress, lastModePress);
             if (now - earliestPress >= COMBO_HOLD_MS) {
-                // Ditahan cukup lama → kirim STOP_ALL
                 Serial.println(">> COMBO: Kedua tombol ditekan bersamaan!");
                 sendCommand(CMD_STOP_ALL);
                 comboSent = true;
-                voiceHandled = true;  // Jangan kirim voice/mode lagi
+                voiceHandled = true;
                 modeHandled = true;
             }
         }
     }
-    
+
     // ── Handle single button release ──
     if (!btn1 && voicePressed) {
-        // Tombol 1 dilepas
         voicePressed = false;
         if (!voiceHandled && !comboSent) {
-            // Single press → kirim VOICE
             sendCommand(CMD_VOICE);
         }
         voiceHandled = false;
-        
-        // Reset combo flag jika kedua tombol sudah dilepas
-        if (!btn2 && !modePressed) {
-            comboSent = false;
-        }
+        if (!btn2 && !modePressed) comboSent = false;
     }
-    
+
     if (!btn2 && modePressed) {
-        // Tombol 2 dilepas
         modePressed = false;
         if (!modeHandled && !comboSent) {
-            // Single press → kirim NEXT_MODE
             sendCommand(CMD_NEXT_MODE);
         }
         modeHandled = false;
-        
-        // Reset combo flag jika kedua tombol sudah dilepas
-        if (!btn1 && !voicePressed) {
-            comboSent = false;
-        }
+        if (!btn1 && !voicePressed) comboSent = false;
     }
-    
-    // Reset combo jika kedua tombol sudah dilepas
-    if (!btn1 && !btn2) {
-        comboSent = false;
-    }
+
+    if (!btn1 && !btn2) comboSent = false;
 }
 
 // ─── Setup ──────────────────────────────────────────────────
@@ -194,53 +167,48 @@ void handleButtons() {
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    
+
     Serial.println("\n========================================");
-    Serial.println("  Smart Blind Assistant - ESP32-C3 BLE");
+    Serial.println("  Smart Blind Assistant - ESP32-WROOM");
     Serial.println("========================================\n");
-    
+
     // Setup buttons (internal pull-up, active LOW)
     pinMode(BUTTON_VOICE_PIN, INPUT_PULLUP);
     pinMode(BUTTON_MODE_PIN, INPUT_PULLUP);
     Serial.printf("Tombol Voice: GPIO %d\n", BUTTON_VOICE_PIN);
     Serial.printf("Tombol Mode:  GPIO %d\n", BUTTON_MODE_PIN);
-    
+
     // ── Inisialisasi BLE ──
     Serial.println("\nInisialisasi BLE...");
     NimBLEDevice::init("SightAssist-ESP32");
-    
-    // Set TX power untuk jangkauan optimal
-    NimBLEDevice::setPower(ESP_PWR_LVL_P21);
-    
+
+    // TX power default ESP32-WROOM sudah optimal, tidak perlu di-set manual
+
     // Buat BLE Server
     pServer = NimBLEDevice::createServer();
     pServer->setCallbacks(new ServerCallbacks());
-    
-    // Buat Service dengan UUID yang sesuai app Flutter
+
+    // Buat Service
     NimBLEService* pService = pServer->createService(SERVICE_UUID);
-    
-    // Buat Characteristic dengan kemampuan READ + NOTIFY
-    // App Flutter subscribe ke notification ini untuk menerima command
+
+    // Buat Characteristic dengan READ + NOTIFY
     pCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
     );
-    
+
     // Set initial value
     uint8_t initVal = 0x00;
     pCharacteristic->setValue(&initVal, 1);
-    
-    // Start service
+
     pService->start();
-    
+
     // ── Setup Advertising ──
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
-    
-    // Start advertising
     NimBLEDevice::startAdvertising();
-    
+
     Serial.println("\nBLE siap! Menunggu koneksi dari app Flutter...");
     Serial.printf("Device name: SightAssist-ESP32\n");
     Serial.printf("Service UUID: %s\n", SERVICE_UUID);
@@ -256,5 +224,5 @@ void setup() {
 
 void loop() {
     handleButtons();
-    delay(10);  // Small delay untuk mengurangi CPU usage
+    delay(10);
 }
